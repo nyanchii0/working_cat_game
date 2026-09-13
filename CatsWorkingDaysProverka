@@ -1,0 +1,237 @@
+#include <Arduboy2.h>
+#include "cat.h"
+#include "enemy.h"
+#include "frame.h"
+
+Arduboy2 arduboy;
+BeepPin1 beep;
+
+// Размеры спрайтов
+#define CAT_W   32
+#define CAT_H   32
+#define ENEMY_W 32
+#define ENEMY_H 32
+
+// Перечисление для экранов игры (State Machine)
+enum GameState {
+  STATE_MENU,
+  STATE_GAMEPLAY,
+  STATE_GAMEOVER,
+  STATE_VICTORY
+};
+GameState currentState = STATE_MENU;
+
+// Направления для щита и стрел
+enum Direction { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
+
+// Структура стрелы (препятствия)
+struct Arrow {
+  int16_t x, y;
+  Direction dir;
+  int8_t speed;
+  bool active;
+};
+
+const uint8_t MAX_ARROWS = 4;
+Arrow arrows[MAX_ARROWS];
+
+// Игровые переменные
+int8_t hp = 3;
+uint16_t score = 0;
+uint8_t currentLevel = 1;
+Direction shieldDir = DIR_UP;
+
+bool isInvincible = false;
+uint32_t invincibilityTimer = 0;
+uint32_t abilityCooldown = 0;
+
+uint32_t lastArrowSpawnTime = 0;
+uint16_t spawnInterval = 1500;
+
+// Сброс игры
+void initGame() {
+  hp = 3;
+  score = 0;
+  currentLevel = 1;
+  shieldDir = DIR_UP;
+  isInvincible = false;
+  invincibilityTimer = 0;
+  abilityCooldown = 0;
+  spawnInterval = 1500;
+  lastArrowSpawnTime = millis();
+
+  for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+    arrows[i].active = false;
+  }
+}
+
+// Спавн новой стрелы
+void spawnArrow() {
+  for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+    if (!arrows[i].active) {
+      Direction d = (Direction)random(0, 4);
+      arrows[i].dir = d;
+      arrows[i].active = true;
+      arrows[i].speed = 1 + currentLevel;
+
+      switch (d) {
+        case DIR_UP:    arrows[i].x = 64;  arrows[i].y = 0;   break;
+        case DIR_DOWN:  arrows[i].y = 64;  arrows[i].x = 64;  break;
+        case DIR_LEFT:  arrows[i].x = 0;   arrows[i].y = 32;  break;
+        case DIR_RIGHT: arrows[i].x = 128; arrows[i].y = 32;  break;
+      }
+      break;
+    }
+  }
+}
+
+void setup() {
+  arduboy.begin();
+  arduboy.setFrameRate(60);
+  arduboy.initRandomSeed();
+  arduboy.audio.begin();
+  beep.begin();
+  initGame();
+}
+
+void loop() {
+  if (!arduboy.nextFrame()) return;
+  arduboy.pollButtons();
+  beep.timer();
+  arduboy.clear();
+
+  switch (currentState) {
+
+    case STATE_MENU:
+      arduboy.setCursor(15, 10);
+      arduboy.print("CAT'S WORKING DAYS");
+      arduboy.setCursor(20, 35);
+      arduboy.print("Press A to Start");
+      arduboy.setCursor(0, 50);
+      arduboy.print("Happy Programmer Day!");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        initGame();
+        currentState = STATE_GAMEPLAY;
+      }
+      break;
+
+    case STATE_GAMEPLAY:
+      // Управление щитом
+      if (arduboy.pressed(UP_BUTTON))    shieldDir = DIR_UP;
+      if (arduboy.pressed(DOWN_BUTTON))  shieldDir = DIR_DOWN;
+      if (arduboy.pressed(LEFT_BUTTON))  shieldDir = DIR_LEFT;
+      if (arduboy.pressed(RIGHT_BUTTON)) shieldDir = DIR_RIGHT;
+
+      // Абилка
+      if (arduboy.justPressed(B_BUTTON) && millis() > abilityCooldown) {
+        isInvincible = true;
+        invincibilityTimer = millis() + 3000;
+        abilityCooldown = millis() + 10000;
+        beep.tone(beep.freq(800.0), 6);
+      }
+      if (isInvincible && millis() > invincibilityTimer) {
+        isInvincible = false;
+      }
+
+      // Спавн
+      if (millis() - lastArrowSpawnTime > spawnInterval) {
+        spawnArrow();
+        lastArrowSpawnTime = millis();
+      }
+
+      // Логика стрел
+      for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+        if (!arrows[i].active) continue;
+
+        if (arrows[i].dir == DIR_UP)    arrows[i].y += arrows[i].speed;
+        if (arrows[i].dir == DIR_DOWN)  arrows[i].y -= arrows[i].speed;
+        if (arrows[i].dir == DIR_LEFT)  arrows[i].x += arrows[i].speed;
+        if (arrows[i].dir == DIR_RIGHT) arrows[i].x -= arrows[i].speed;
+
+        bool hitX = (arrows[i].dir == DIR_LEFT && arrows[i].x >= 54) || (arrows[i].dir == DIR_RIGHT && arrows[i].x <= 74);
+        bool hitY = (arrows[i].dir == DIR_UP && arrows[i].y >= 22) || (arrows[i].dir == DIR_DOWN && arrows[i].y <= 42);
+
+        if ((arrows[i].dir == DIR_LEFT || arrows[i].dir == DIR_RIGHT) && hitX && abs(arrows[i].y - 32) < 10) {
+          arrows[i].active = false;
+          if (isInvincible || shieldDir == arrows[i].dir) { score += 10; beep.tone(beep.freq(600.0), 3); }
+          else { hp--; beep.tone(beep.freq(150.0), 12); }
+        }
+        else if ((arrows[i].dir == DIR_UP || arrows[i].dir == DIR_DOWN) && hitY && abs(arrows[i].x - 64) < 10) {
+          arrows[i].active = false;
+          if (isInvincible || shieldDir == arrows[i].dir) { score += 10; beep.tone(beep.freq(600.0), 3); }
+          else { hp--; beep.tone(beep.freq(150.0), 12); }
+        }
+      }
+
+      // Уровни
+      if (score >= 100 && currentLevel == 1) { currentLevel = 2; spawnInterval = 1000; }
+      if (score >= 250 && currentLevel == 2) { currentLevel = 3; spawnInterval = 600; }
+      if (score >= 500 && currentLevel == 3) { currentState = STATE_VICTORY; }
+      if (hp <= 0) { currentState = STATE_GAMEOVER; }
+
+      // ===== ОТРИСОВКА =====
+      // 1. Рамка поля (фон)
+      arduboy.drawBitmap(0, 0, frameBg, 128, 64, WHITE);
+
+      // 2. Кот в центре
+      if (isInvincible) {
+        arduboy.drawCircle(64, 32, 18, WHITE);
+      }
+      arduboy.drawBitmap(64 - CAT_W / 2, 32 - CAT_H / 2, catSprite, CAT_W, CAT_H, WHITE);
+
+      // 3. Щит
+      switch (shieldDir) {
+        case DIR_UP:    arduboy.drawFastHLine(52, 20, 24, WHITE); break;
+        case DIR_DOWN:  arduboy.drawFastHLine(52, 44, 24, WHITE); break;
+        case DIR_LEFT:  arduboy.drawFastVLine(50, 20, 24, WHITE); break;
+        case DIR_RIGHT: arduboy.drawFastVLine(78, 20, 24, WHITE); break;
+      }
+
+      // 4. Враги
+      for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+        if (arrows[i].active) {
+          arduboy.drawBitmap(
+            arrows[i].x - ENEMY_W / 2,
+            arrows[i].y - ENEMY_H / 2,
+            enemySprite, ENEMY_W, ENEMY_H, WHITE
+          );
+        }
+      }
+
+      // 5. HUD — поверх всего
+      arduboy.setCursor(2, 2);   arduboy.print("HP:");  arduboy.print(hp);
+      arduboy.setCursor(45, 2);  arduboy.print("LVL:"); arduboy.print(currentLevel);
+      arduboy.setCursor(90, 2);  arduboy.print("PTS:"); arduboy.print(score);
+      break;
+
+    case STATE_GAMEOVER:
+      arduboy.setCursor(35, 15);
+      arduboy.print("GAME OVER");
+      arduboy.setCursor(25, 35);
+      arduboy.print("SCORE: "); arduboy.print(score);
+      arduboy.setCursor(20, 50);
+      arduboy.print("Press A to Restart");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        initGame();
+        currentState = STATE_GAMEPLAY;
+      }
+      break;
+
+    case STATE_VICTORY:
+      arduboy.setCursor(25, 15);
+      arduboy.print("SENIOR CODER!");
+      arduboy.setCursor(4, 35);
+      arduboy.print("You survived the day");
+      arduboy.setCursor(20, 50);
+      arduboy.print("Press A for Menu");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        currentState = STATE_MENU;
+      }
+      break;
+  }
+
+  arduboy.display();
+}
