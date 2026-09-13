@@ -1,0 +1,251 @@
+#include <Arduboy2.h>
+
+Arduboy2 arduboy;
+// Создаем объект для генерации простых звуков-писков
+BeepPin1 beep;
+
+// Перечисление для экранов игры (State Machine)
+enum GameState {
+  STATE_MENU,
+  STATE_GAMEPLAY,
+  STATE_GAMEOVER,
+  STATE_VICTORY
+};
+GameState currentState = STATE_MENU;
+
+// Направления для щита и стрел
+enum Direction { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
+
+// Структура стрелы (препятствия)
+struct Arrow {
+  int16_t x, y;
+  Direction dir;
+  int8_t speed;
+  bool active;
+};
+
+// Константы баланса
+const uint8_t MAX_ARROWS = 4;
+Arrow arrows[MAX_ARROWS];
+
+// Игровые переменные
+int8_t hp = 3;
+uint16_t score = 0;
+uint8_t currentLevel = 1;
+Direction shieldDir = DIR_UP;
+
+// Переменные для спец-способности (Неуязвимость)
+bool isInvincible = false;
+uint32_t invincibilityTimer = 0;
+uint32_t abilityCooldown = 0;
+
+// Таймеры для генерации стрел
+uint32_t lastArrowSpawnTime = 0;
+uint16_t spawnInterval = 1500; // мс между стрелами
+
+// Сброс игры при перезапуске
+void initGame() {
+  hp = 3;
+  score = 0;
+  currentLevel = 1;
+  shieldDir = DIR_UP;
+  isInvincible = false;
+  invincibilityTimer = 0;
+  abilityCooldown = 0;
+  spawnInterval = 1500;
+  lastArrowSpawnTime = millis(); // сбрасываем таймер спавна
+
+  for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+    arrows[i].active = false;
+  }
+}
+
+// Спавн новой стрелы (летит из-за экрана к центру 64, 32)
+void spawnArrow() {
+  for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+    if (!arrows[i].active) {
+      Direction d = (Direction)random(0, 4);
+      arrows[i].dir = d;
+      arrows[i].active = true;
+      arrows[i].speed = 1 + currentLevel; // С каждым уровнем быстрее
+
+      switch (d) {
+        case DIR_UP:    arrows[i].x = 64;  arrows[i].y = 0;   break;  // Летит вниз
+        case DIR_DOWN:  arrows[i].y = 64;  arrows[i].x = 64;  break;  // Летит вверх
+        case DIR_LEFT:  arrows[i].x = 0;   arrows[i].y = 32;  break;  // Летит вправо
+        case DIR_RIGHT: arrows[i].x = 128; arrows[i].y = 32;  break;  // Летит влево
+      }
+      break;
+    }
+  }
+}
+
+void setup() {
+  arduboy.begin();
+  arduboy.setFrameRate(60);
+  arduboy.initRandomSeed(); // Рандом работает корректно
+
+  // Включаем и инициализируем аудио-систему
+  arduboy.audio.begin();
+  beep.begin();
+
+  initGame();
+}
+
+void loop() {
+  if (!arduboy.nextFrame()) return;
+  arduboy.pollButtons();
+
+  // Обязательно обновляем таймер звукового пищания в каждом кадре
+  beep.timer();
+
+  arduboy.clear();
+
+  // ГЛАВНЫЙ АВТОМАТ ИГРЫ
+  switch (currentState) {
+
+    case STATE_MENU:
+      arduboy.setCursor(15, 10);
+      arduboy.print("CAT'S WORKING DAYS");
+      arduboy.setCursor(20, 35);
+      arduboy.print("Press A to Start");
+      arduboy.setCursor(0, 50);              // сдвинуто, чтобы текст влез в 128 px
+      arduboy.print("Happy Programmer Day!");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        initGame();
+        currentState = STATE_GAMEPLAY;
+      }
+      break;
+
+    case STATE_GAMEPLAY:
+      // 1. УПРАВЛЕНИЕ ЩИТОМ (4 стрелки)
+      if (arduboy.pressed(UP_BUTTON))    shieldDir = DIR_UP;
+      if (arduboy.pressed(DOWN_BUTTON))  shieldDir = DIR_DOWN;
+      if (arduboy.pressed(LEFT_BUTTON))  shieldDir = DIR_LEFT;
+      if (arduboy.pressed(RIGHT_BUTTON)) shieldDir = DIR_RIGHT;
+
+      // 2. АБИЛКА: НЕУЯЗВИМОСТЬ (Кнопка B)
+      if (arduboy.justPressed(B_BUTTON) && millis() > abilityCooldown) {
+        isInvincible = true;
+        invincibilityTimer = millis() + 3000; // 3 секунды щита неуязвимости
+        abilityCooldown = millis() + 10000;   // Откат 10 секунд
+        beep.tone(beep.freq(800.0), 6);       // Короткий высокий писк абилки
+      }
+
+      // Проверка таймера абилки
+      if (isInvincible && millis() > invincibilityTimer) {
+        isInvincible = false;
+      }
+
+      // 3. ГЕНЕРАЦИЯ СТРЕЛ (Трудности айтишника)
+      if (millis() - lastArrowSpawnTime > spawnInterval) {
+        spawnArrow();
+        lastArrowSpawnTime = millis();
+      }
+
+      // 4. ДВИЖЕНИЕ И ПРОВЕРКА СТРЕЛ
+      for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+        if (!arrows[i].active) continue;
+
+        // Двигаем стрелу к центру (котику)
+        if (arrows[i].dir == DIR_UP)    arrows[i].y += arrows[i].speed;
+        if (arrows[i].dir == DIR_DOWN)  arrows[i].y -= arrows[i].speed;
+        if (arrows[i].dir == DIR_LEFT)  arrows[i].x += arrows[i].speed;
+        if (arrows[i].dir == DIR_RIGHT) arrows[i].x -= arrows[i].speed;
+
+        // Коллизия с центром (центр котика: X=64, Y=32)
+        bool hitX = (arrows[i].dir == DIR_LEFT && arrows[i].x >= 54) || (arrows[i].dir == DIR_RIGHT && arrows[i].x <= 74);
+        bool hitY = (arrows[i].dir == DIR_UP && arrows[i].y >= 22) || (arrows[i].dir == DIR_DOWN && arrows[i].y <= 42);
+
+        if ((arrows[i].dir == DIR_LEFT || arrows[i].dir == DIR_RIGHT) && hitX && abs(arrows[i].y - 32) < 10) {
+          // Прилетело по Х
+          arrows[i].active = false;
+          if (isInvincible || shieldDir == arrows[i].dir) {
+            score += 10;
+            beep.tone(beep.freq(600.0), 3); // Писк успешного блока
+          }
+          else {
+            hp--;
+            beep.tone(beep.freq(150.0), 12); // Грубый писк урона
+          }
+        }
+        else if ((arrows[i].dir == DIR_UP || arrows[i].dir == DIR_DOWN) && hitY && abs(arrows[i].x - 64) < 10) {
+          // Прилетело по Y
+          arrows[i].active = false;
+          if (isInvincible || shieldDir == arrows[i].dir) {
+            score += 10;
+            beep.tone(beep.freq(600.0), 3);
+          }
+          else {
+            hp--;
+            beep.tone(beep.freq(150.0), 12);
+          }
+        }
+      }
+
+      // ЛОГИКА УРОВНЕЙ
+      if (score >= 100 && currentLevel == 1) { currentLevel = 2; spawnInterval = 1000; }
+      if (score >= 250 && currentLevel == 2) { currentLevel = 3; spawnInterval = 600; }
+      if (score >= 500 && currentLevel == 3) { currentState = STATE_VICTORY; }
+
+      // ПРОВЕРКА СМЕРТИ
+      if (hp <= 0) { currentState = STATE_GAMEOVER; }
+
+      // 5. ОТРИСОВКА ИНТЕРФЕЙСА (HUD)
+      arduboy.setCursor(2, 2);   arduboy.print("HP:"); arduboy.print(hp);
+      arduboy.setCursor(45, 2);  arduboy.print("LVL:"); arduboy.print(currentLevel);
+      arduboy.setCursor(90, 2);  arduboy.print("PTS:"); arduboy.print(score);
+
+      // ОТРИСОВКА КОТИКА (Центр)
+      if (isInvincible) {
+        arduboy.drawCircle(64, 32, 12, WHITE); // Поле неуязвимости
+      }
+      arduboy.fillRect(60, 28, 8, 8, WHITE); // Сам котик (заглушка-квадрат)
+
+      // ОТРИСОВКА ЩИТА
+      switch (shieldDir) {
+        case DIR_UP:    arduboy.drawFastHLine(52, 20, 24, WHITE); break;
+        case DIR_DOWN:  arduboy.drawFastHLine(52, 44, 24, WHITE); break;
+        case DIR_LEFT:  arduboy.drawFastVLine(50, 20, 24, WHITE); break;
+        case DIR_RIGHT: arduboy.drawFastVLine(78, 20, 24, WHITE); break;
+      }
+
+      // ОТРИСОВКА СТРЕЛ
+      for (uint8_t i = 0; i < MAX_ARROWS; i++) {
+        if (arrows[i].active) {
+          arduboy.drawCircle(arrows[i].x, arrows[i].y, 2, WHITE);
+        }
+      }
+      break;
+
+    case STATE_GAMEOVER:
+      arduboy.setCursor(35, 15);
+      arduboy.print("GAME OVER");
+      arduboy.setCursor(25, 35);
+      arduboy.print("SCORE: "); arduboy.print(score);
+      arduboy.setCursor(20, 50);
+      arduboy.print("Press A to Restart");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        initGame();
+        currentState = STATE_GAMEPLAY;
+      }
+      break;
+
+    case STATE_VICTORY:
+      arduboy.setCursor(25, 15);
+      arduboy.print("SENIOR CODER!");
+      arduboy.setCursor(4, 35);              // сдвинуто, чтобы текст влез в 128 px
+      arduboy.print("You survived the day");
+      arduboy.setCursor(20, 50);
+      arduboy.print("Press A for Menu");
+
+      if (arduboy.justPressed(A_BUTTON)) {
+        currentState = STATE_MENU;
+      }
+      break;
+  }
+
+  arduboy.display();
+}
